@@ -1,0 +1,8 @@
+# Node.js specific files
+node_modules/
+npm-debug.log
+.DS_Store # macOS specific
+.env # Your environment variables, DO NOT COMMIT THIS!
+
+# Database files (important for your project)
+*.db
