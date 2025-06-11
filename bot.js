@@ -28,7 +28,8 @@ db.serialize(() => {
             telegram_id INTEGER UNIQUE NOT NULL,
             current_key_id INTEGER,
             last_signal_timestamp TEXT,
-            signal_count_hourly INTEGER DEFAULT 0,
+            signal_count_daily INTEGER DEFAULT 0,
+            language_code TEXT,
             FOREIGN KEY (current_key_id) REFERENCES access_keys(id)
         )
     `);
@@ -46,13 +47,137 @@ db.serialize(() => {
 });
 
 // --- Constants ---
-// Replace with your Telegram user IDs. These users will have access to the /generate_key command.
 const ADMIN_IDS = [7263932570, 987654321]; // IMPORTANT: Replace with your actual admin IDs!
-const HOURLY_SIGNAL_LIMIT = 10;
+const DAILY_SIGNAL_LIMIT = 100;
 
-// Path to the directory containing "Jumps ⬆️" images.
-// Ensure your images are located in this 'images/' folder in your project root.
-const IMAGES_DIR = path.resolve(__dirname, 'images');
+const IMAGES_BASE_DIR = path.resolve(__dirname, 'images'); // Базова директорія для зображень
+
+// --- Multilingual Phrases ---
+const phrases = {
+    'it': {
+        start_welcome_initial_prompt: 'Ciao! Benvenuto. Per favor, scegli la tua lingua per continuare:',
+        start_welcome: 'Ciao! Sono il tuo bot per i suggerimenti di gioco. Per accedere ai segnali, inserisci la tua chiave di accesso unica.',
+        start_has_key: 'Puoi usare le seguenti opzioni:',
+        main_menu_button_signal: 'Dai Segnale',
+        main_menu_button_subscription: 'Info Abbonamento',
+        main_menu_button_change_lang: 'Cambia Lingua',
+        generating_signal: 'Generazione segnale in corso... Attendere prego.',
+        error_general: 'Si è verificato un errore. Riprova più tardi.',
+        no_active_key: 'Non hai una chiave di accesso attiva. Inseriscila.',
+        key_expired: 'La tua chiave di accesso è scaduta. Inserisci una nuova chiave o contatta l\'amministratore.',
+        limit_exceeded: 'Hai superato il limite di segnali giornalieri ({{limit}} al giorno). Riprova più tardi.',
+        contact_admin_button: 'Contatta l\'Amministratore',
+        subscription_no_active: 'Attualmente non hai un abbonamento attivo. Attiva una chiave di accesso per ottenerne uno.',
+        subscription_active_expires: 'Il tuo abbonamento è attivo!\nScade il: {{expiryDate}}',
+        subscription_active_lifetime: 'Nessuna scadenza (accesso a vita).',
+        invalid_key_or_used: 'Chiave non valida o già utilizzata. Inserisci una chiave unica valida.',
+        key_activated: 'Chiave attivata con successo! Ora puoi ricevere i segnali.',
+        admin_no_permission: 'Non hai il permesso di usare questo comando.',
+        admin_generate_key_format: 'Formato errato. Usa: /generate_key [2days|4days|week|month|forever]',
+        admin_key_generated: 'Nuova chiave generata: `{{key}}`\nScade: {{expiresAt}}',
+        admin_key_generated_never: 'Mai',
+        change_lang_message: 'Per favor, scegli la tua lingua:',
+        language_set: 'Lingua impostata su italiano.',
+        commands_info: 'Puoi anche usare i comandi: /give_signal e /subscription_info direttamente dal menu di Telegram.',
+        key_invalid_not_active: 'Questa chiave non è più valida.',
+        please_choose_language: 'Per favor, scegli la tua lingua per continuare.',
+        signal_message_format: '🟢 BET\n🔥 {{steps}} PASSAGGI DI CASSA AUTOMATICA\n✨ Livello: {{level}}',
+        level_easy: 'Facile',
+        level_medium: 'Medio',
+        level_hard: 'Difficile',
+        level_extra_hard: 'Extra Difficile',
+    },
+    'de': {
+        start_welcome_initial_prompt: 'Hallo! Willkommen. Bitte wählen Sie Ihre Sprache, um fortzufahren:',
+        start_welcome: 'Hallo! Ich bin dein Spielhinweis-Bot. Um Zugriff auf Signale zu erhalten, gib bitte deinen eindeutigen Zugangsschlüssel ein.',
+        start_has_key: 'Du kannst die folgenden Optionen verwenden:',
+        main_menu_button_signal: 'Signal geben',
+        main_menu_button_subscription: 'Abonnement-Info',
+        main_menu_button_change_lang: 'Sprache ändern',
+        generating_signal: 'Signal wird generiert... Bitte warten Sie einen Moment.',
+        error_general: 'Es ist ein Fehler aufgetreten. Bitte versuchen Sie es später erneut.',
+        no_active_key: 'Du hast keinen aktiven Zugangsschlüssel. Bitte gib ihn ein.',
+        key_expired: 'Dein Zugangsschlüssel ist abgelaufen. Bitte gib einen neuen Schlüssel ein oder kontaktiere den Administrator.',
+        limit_exceeded: 'Du hast das tägliche Signallimit ({{limit}} pro Tag) überschritten. Bitte versuche es später erneut.',
+        contact_admin_button: 'Admin kontaktieren',
+        subscription_no_active: 'Du hast derzeit kein aktives Abonnement. Bitte aktiviere einen Zugangsschlüssel, um eines zu erhalten.',
+        subscription_active_expires: 'Dein Abonnement ist aktiv!\nEs läuft ab am: {{expiryDate}}',
+        subscription_active_lifetime: 'Kein Ablaufdatum (lebenslanger Zugriff).',
+        invalid_key_or_used: 'Ungültiger Schlüssel oder bereits verwendet. Bitte gib einen gültigen, eindeutigen Schlüssel ein.',
+        key_activated: 'Schlüssel erfolgreich aktiviert! Du kannst jetzt Signale empfangen.',
+        admin_no_permission: 'Du hast keine Berechtigung, diesen Befehl zu verwenden.',
+        admin_generate_key_format: 'Falsches Format. Verwende: /generate_key [2days|4days|week|month|forever]',
+        admin_key_generated: 'Neuer Schlüssel generiert: `{{key}}`\nLäuft ab: {{expiresAt}}',
+        admin_key_generated_never: 'Nie',
+        change_lang_message: 'Bitte wählen Sie Ihre Sprache:',
+        language_set: 'Sprache auf Deutsch geändert.',
+        commands_info: 'Du kannst auch die Befehle: /give_signal und /subscription_info direkt über das Telegram-Menü verwenden.',
+        key_invalid_not_active: 'Dieser Schlüssel ist nicht mehr gültig.',
+        please_choose_language: 'Bitte wählen Sie Ihre Sprache, um fortzufahren.',
+        signal_message_format: '🟢 BET\n🔥 {{steps}} SCHRITTE AUTO CASH OUT\n✨ Level: {{level}}',
+        level_easy: 'Leicht',
+        level_medium: 'Mittel',
+        level_hard: 'Schwer',
+        level_extra_hard: 'Extra Schwer',
+    },
+    'fr': {
+        start_welcome_initial_prompt: 'Bonjour! Bienvenue. Veuillez choisir votre langue pour continuer :',
+        start_welcome: 'Bonjour! Je suis votre bot d\'indices de jeu. Pour accéder aux signaux, veuillez entrer votre clé d\'accès unique.',
+        start_has_key: 'Vous pouvez utiliser les options suivantes :',
+        main_menu_button_signal: 'Donner un Signal',
+        main_menu_button_subscription: 'Infos Abonnement',
+        main_menu_button_change_lang: 'Changer la Langue',
+        generating_signal: 'Génération du signal... Veuillez patienter.',
+        error_general: 'Une erreur est survenue. Veuillez réessayer plus tard.',
+        no_active_key: 'Vous n\'avez pas de clé d\'accès active. Veuillez l\'entrer.',
+        key_expired: 'Votre clé d\'accès a expiré. Veuillez entrer une nouvelle clé ou contacter l\'administrateur.',
+        limit_exceeded: 'Vous avez dépassé la limite de signaux quotidiens ({{limit}} par jour). Veuillez réessayer plus tard.',
+        contact_admin_button: 'Contacter l\'Administrateur',
+        subscription_no_active: 'Vous n\'avez actuellement pas d\'abonnement actif. Veuillez activer une clé d\'accès pour en obtenir un.',
+        subscription_active_expires: 'Votre abonnement est actif !\nExpire le : {{expiryDate}}',
+        subscription_active_lifetime: 'Aucune expiration (accès à vie).',
+        invalid_key_or_used: 'Clé invalide ou déjà utilisée. Veuillez entrer une clé unique valide.',
+        key_activated: 'Clé activée avec succès ! Vous pouvez maintenant recevoir des signaux.',
+        admin_no_permission: 'Vous n\'avez pas la permission d\'utiliser cette commande.',
+        admin_generate_key_format: 'Format incorrect. Utilisez : /generate_key [2days|4days|week|month|forever]',
+        admin_key_generated: 'Nouvelle clé générée : `{{key}}`\nExpire : {{expiresAt}}',
+        admin_key_generated_never: 'Jamais',
+        change_lang_message: 'Veuillez choisir votre langue :',
+        language_set: 'Langue définie sur le français.',
+        commands_info: 'Vous pouvez également utiliser les commandes : /give_signal et /subscription_info directement depuis le menu Telegram.',
+        key_invalid_not_active: 'Cette clé n\'est plus valide.',
+        please_choose_language: 'Veuillez choisir votre langue pour continuer.',
+        signal_message_format: '🟢 BET\n🔥 {{steps}} ÉTAPES AUTO CASH OUT\n✨ Niveau: {{level}}',
+        level_easy: 'Facile',
+        level_medium: 'Moyen',
+        level_hard: 'Difficile',
+        level_extra_hard: 'Extra Difficile',
+    }
+};
+
+/**
+ * Helper function to get a translated phrase.
+ * @param {string|null} lang The language code (e.g., 'it', 'de', 'fr'). Can be null if not set.
+ * @param {string} key The key for the phrase.
+ * @param {object} [replacements] Optional object with placeholders to replace.
+ * @returns {string} The translated phrase. Returns a fallback or empty string if lang is null or key not found.
+ */
+function getPhrase(lang, key, replacements = {}) {
+    let phrase = null;
+    if (lang && phrases[lang] && phrases[lang][key]) {
+        phrase = phrases[lang][key];
+    } else if (phrases['it'] && phrases['it'][key]) { // Fallback to Italian if selected lang or key not found
+        phrase = phrases['it'][key];
+    } else {
+        console.warn(`Missing phrase for key "${key}" in language "${lang || 'null'}" and no Italian fallback.`);
+        return `[Missing phrase: ${key}]`; // Or an empty string, or a generic error message
+    }
+
+    for (const placeholder in replacements) {
+        phrase = phrase.replace(`{{${placeholder}}}`, replacements[placeholder]);
+    }
+    return phrase;
+}
 
 
 // --- Helper Functions ---
@@ -67,13 +192,19 @@ function generateUniqueKey() {
 
 /**
  * Calculates the expiry date for a key based on a given duration.
- * @param {string} duration - The duration string ('week', 'month', 'forever').
+ * @param {string} duration - The duration string ('2days', '4days', 'week', 'month', 'forever').
  * @returns {string|null} The expiry date in ISO 8601 format, or null if 'forever' or invalid duration.
- */
+*/
 function calculateExpiryDate(duration) {
     const now = new Date();
     let expiryDate = null;
     switch (duration) {
+        case '2days':
+            expiryDate = new Date(now.setDate(now.getDate() + 2));
+            break;
+        case '4days':
+            expiryDate = new Date(now.setDate(now.getDate() + 4));
+            break;
         case 'week':
             expiryDate = new Date(now.setDate(now.getDate() + 7));
             break;
@@ -90,72 +221,96 @@ function calculateExpiryDate(duration) {
 }
 
 /**
- * Gets a random image file path from the IMAGES_DIR.
- * Filters for common image file extensions.
- * @returns {string|null} The full path to a random image, or null if no images are found.
+ * Gets the specific image file path for a given number of steps and language.
+ * Checks for .png extension.
+ * @param {string} lang The language code (e.g., 'it', 'de', 'fr').
+ * @param {number} steps The number of steps to find the image for.
+ * @returns {string|null} The full path to the specific image, or null if not found.
  */
-function getRandomImagePath() {
-    try {
-        const files = fs.readdirSync(IMAGES_DIR);
-        console.log('Files found in images directory:', files); // <-- DIAGNOSTIC LOG
+function getSpecificImagePathForSteps(lang, steps) {
+    const langImagesDir = path.join(IMAGES_BASE_DIR, lang);
+    const imagePath = path.join(langImagesDir, `${steps}.png`); // Припускаємо, що всі зображення мають розширення .png
 
-        const imageFiles = files.filter(file => {
-            const ext = path.extname(file).toLowerCase();
-            return ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
-        });
+    console.log(`Attempting to find image: ${imagePath}`);
 
-        console.log('Filtered image files:', imageFiles); // <-- DIAGNOSTIC LOG
-
-        if (imageFiles.length === 0) {
-            console.warn('No image files found in the images directory.');
-            return null;
-        }
-
-        const randomIndex = Math.floor(Math.random() * imageFiles.length);
-        const selectedImage = imageFiles[randomIndex];
-        console.log('Selected random image:', selectedImage); // <-- DIAGNOSTIC LOG
-
-        return path.join(IMAGES_DIR, selectedImage);
-    } catch (error) {
-        console.error('Error reading images directory:', error);
-        return null;
+    if (fs.existsSync(imagePath)) {
+        return imagePath;
+    } else {
+        console.warn(`Image for steps ${steps} not found for language '${lang}': ${imagePath}`);
+        return null; // Зображення не знайдено
     }
 }
 
+
 // --- Keyboard Markup for common user actions ---
-const mainKeyboard = Markup.inlineKeyboard([
-    Markup.button.callback('Give Signal', 'give_signal'),
-    Markup.button.callback('Subscription Info', 'subscription_info')
+// mainKeyboard now depends on the user's language
+function generateMainKeyboard(lang) {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback(getPhrase(lang, 'main_menu_button_signal'), 'give_signal'),
+            Markup.button.callback(getPhrase(lang, 'main_menu_button_subscription'), 'subscription_info')
+        ],
+        [
+            Markup.button.callback(getPhrase(lang, 'main_menu_button_change_lang'), 'change_language')
+        ]
+    ]);
+}
+
+// expiredKeyKeyboard also depends on the user's language
+function generateExpiredKeyKeyboard(lang) {
+    return Markup.inlineKeyboard([
+        Markup.button.url(getPhrase(lang, 'contact_admin_button'), 'https://t.me/HANS_LANDA1')
+    ]);
+}
+
+// Keyboard for language selection
+const setLanguageKeyboard = Markup.inlineKeyboard([
+    Markup.button.callback('Italiano', 'set_lang_it'),
+    Markup.button.callback('Deutsch', 'set_lang_de'),
+    Markup.button.callback('Français', 'set_lang_fr'),
 ]);
 
-// --- Keyboard for expired key messages, with contact admin button ---
-const expiredKeyKeyboard = Markup.inlineKeyboard([
-    Markup.button.url('Contact Admin', 'https://t.me/HANS_LANDA1')
-]);
 
-
-// --- Middleware to check if user exists in DB and create if not ---
-// This middleware runs for every incoming message and ensures the user is registered in the database.
+// --- Middleware to check if user exists in DB, load language, and enforce language selection ---
 bot.use(async (ctx, next) => {
-    if (ctx.from) {
-        db.get('SELECT * FROM users WHERE telegram_id = ?', [ctx.from.id], (err, row) => {
-            if (err) {
-                console.error('Error checking user in DB:', err);
-                return next(); // Continue processing even if DB error occurs
-            }
-            if (!row) {
-                // If user doesn't exist, insert them into the users table
-                db.run('INSERT INTO users (telegram_id) VALUES (?)', [ctx.from.id], (err) => {
-                    if (err) console.error('Error inserting new user into DB:', err);
-                    next();
-                });
-            } else {
-                next(); // User exists, proceed to next middleware/handler
-            }
-        });
-    } else {
-        next(); // No user info, proceed
+    if (!ctx.from) { // No user info, proceed (e.g. channel post)
+        ctx.state.lang = 'it'; // Default fallback for system messages, not user interactions
+        return next();
     }
+
+    db.get('SELECT * FROM users WHERE telegram_id = ?', [ctx.from.id], (err, row) => {
+        if (err) {
+            console.error('Error checking user in DB:', err);
+            ctx.state.lang = 'it'; // Default fallback on DB error
+            return next();
+        }
+
+        if (!row) {
+            // New user, insert them with NULL language_code
+            db.run('INSERT INTO users (telegram_id, language_code) VALUES (?, NULL)', [ctx.from.id], (err) => {
+                if (err) console.error('Error inserting new user into DB:', err);
+                ctx.state.lang = null; // Mark language as not set
+                // For new users, ensure they are routed to language selection
+                if (ctx.message && ctx.message.text !== '/start' && (!ctx.callbackQuery || !ctx.callbackQuery.data.startsWith('set_lang_'))) {
+                     // If it's not a start command or language selection, prompt
+                    ctx.reply("Please choose your language to continue.", setLanguageKeyboard);
+                    return; // Stop processing this update
+                }
+                next();
+            });
+        } else {
+            ctx.state.lang = row.language_code; // Load user's language (can be NULL)
+
+            // If language is not set and it's not a language selection action or /start
+            if (!ctx.state.lang && (!ctx.callbackQuery || !ctx.callbackQuery.data.startsWith('set_lang_')) && (!ctx.message || ctx.message.text !== '/start')) {
+                // If the bot tries to send a reply without language set yet, it will error.
+                // We must intercept and send the language prompt.
+                ctx.reply("Please choose your language to continue.", setLanguageKeyboard);
+                return; // Stop processing this update
+            }
+            next(); // User exists, proceed to next middleware/handler
+        }
+    });
 });
 
 
@@ -167,72 +322,111 @@ bot.use(async (ctx, next) => {
  */
 async function handleGiveSignal(ctx) {
     const telegramId = ctx.from.id;
+    const lang = ctx.state.lang;
 
-    db.get('SELECT u.current_key_id, u.last_signal_timestamp, u.signal_count_hourly, ak.expires_at FROM users u LEFT JOIN access_keys ak ON u.current_key_id = ak.id WHERE u.telegram_id = ?', [telegramId], async (err, user) => {
+    // IMPORTANT: Ensure language is set before proceeding
+    if (!lang) {
+        return ctx.reply(getPhrase('it', 'please_choose_language'), setLanguageKeyboard);
+    }
+
+    db.get('SELECT u.current_key_id, u.last_signal_timestamp, u.signal_count_daily, ak.expires_at FROM users u LEFT JOIN access_keys ak ON u.current_key_id = ak.id WHERE u.telegram_id = ?', [telegramId], async (err, user) => {
         if (err) {
             console.error('Error fetching user for signal:', err);
-            return ctx.reply('An error occurred. Please try again later.');
+            return ctx.reply(getPhrase(lang, 'error_general'));
         }
 
         if (!user || !user.current_key_id) {
-            return ctx.reply('You do not have an active access key. Please enter it.', expiredKeyKeyboard);
+            return ctx.reply(getPhrase(lang, 'no_active_key'), generateExpiredKeyKeyboard(lang));
         }
 
         // Check key expiration
         if (user.expires_at && new Date(user.expires_at) < new Date()) {
             db.run('UPDATE access_keys SET is_active = FALSE WHERE id = ?', [user.current_key_id]);
             db.run('UPDATE users SET current_key_id = NULL WHERE telegram_id = ?', [telegramId]);
-            return ctx.reply('Your access key has expired. Please enter a new key or contact the administrator.', expiredKeyKeyboard);
+            return ctx.reply(getPhrase(lang, 'key_expired'), generateExpiredKeyKeyboard(lang));
         }
 
-        // Rate Limiting Logic
+        // Daily Rate Limiting Logic
         const now = new Date();
-        let lastSignalTime = user.last_signal_timestamp ? new Date(user.last_signal_timestamp) : null;
-        let signalCount = user.signal_count_hourly;
+        const lastSignalTime = user.last_signal_timestamp ? new Date(user.last_signal_timestamp) : null;
+        let signalCount = user.signal_count_daily;
 
-        if (!lastSignalTime || (now.getTime() - lastSignalTime.getTime()) > 3600000) { // 1 hour in milliseconds
-            signalCount = 1; // Reset count for new hour
-            lastSignalTime = now;
+        const startOfTodayUTC = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())).getTime();
+        const startOfLastSignalDayUTC = lastSignalTime ? new Date(Date.UTC(lastSignalTime.getFullYear(), lastSignalTime.getMonth(), lastSignalTime.getDate())).getTime() : 0;
+
+        if (!lastSignalTime || startOfLastSignalDayUTC < startOfTodayUTC) {
+            signalCount = 1;
         } else {
-            signalCount++; // Increment count within the hour
+            signalCount++;
         }
 
-        if (signalCount > HOURLY_SIGNAL_LIMIT) {
-            return ctx.reply(`You have exceeded the signal limit (${HOURLY_SIGNAL_LIMIT} per hour). Please try again later.`);
+        if (signalCount > DAILY_SIGNAL_LIMIT) {
+            return ctx.reply(getPhrase(lang, 'limit_exceeded', { limit: DAILY_SIGNAL_LIMIT }));
         }
 
         // Update rate limit in DB
-        db.run('UPDATE users SET last_signal_timestamp = ?, signal_count_hourly = ? WHERE telegram_id = ?',
-            [lastSignalTime.toISOString(), signalCount, telegramId], (updateErr) => {
+        db.run('UPDATE users SET last_signal_timestamp = ?, signal_count_daily = ? WHERE telegram_id = ?',
+            [now.toISOString(), signalCount, telegramId], (updateErr) => {
                 if (updateErr) console.error('Error updating rate limit:', updateErr);
             });
 
-        // --- NEW: Send "generating" message and add delay ---
-        await ctx.reply('Generating signal... Please wait a moment.');
+        await ctx.reply(getPhrase(lang, 'generating_signal'));
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-        // Add a delay (e.g., 1.5 seconds)
-        await new Promise(resolve => setTimeout(resolve, 1500)); // 1500 milliseconds = 1.5 seconds
+        // --- Modified Logic for Levels and Steps (Weighted Random Selection) ---
+        // 'easy' and 'medium' are more frequent
+        const weightedLevels = [
+            'easy', 'easy', 'easy', 'easy', 'easy',
+            'medium', 'medium', 'medium', 'medium',
+            'hard',
+            'extra_hard'
+        ];
+        // Now 'easy' is 5x, 'medium' is 4x, 'hard' is 1x, 'extra_hard' is 1x.
+        // Adjust array contents to change frequency.
 
-        // Generate Signal details
-        const levels = ['Easy', 'Medium', 'Hard', 'Expert'];
-        const randomLevel = levels[Math.floor(Math.random() * levels.length)];
-        // Generates a float between 1.00 and 15.00, formatted to two decimal places
-        const randomBetAmount = (Math.random() * 14 + 1).toFixed(2);
+        const randomLevelKey = weightedLevels[Math.floor(Math.random() * weightedLevels.length)];
+        const translatedLevel = getPhrase(lang, `level_${randomLevelKey}`);
 
-        const signalText = `Level: ${randomLevel}\nBet Amount: ${randomBetAmount} EUR`;
-
-        // Get a random image path from the 'images' folder
-        const randomImagePath = getRandomImagePath(); // This is where we call the function
-
-        if (randomImagePath) {
-            // Send the photo from the local path with the generated caption
-            await ctx.replyWithPhoto({ source: randomImagePath }, { caption: `Jumps ⬆️\n${signalText}` });
-        } else {
-            // Fallback if no images are found or an error occurred
-            await ctx.reply(`Jumps ⬆️\n${signalText}\n\n(No image available)`);
+        let minSteps, maxSteps;
+        switch (randomLevelKey) {
+            case 'easy':
+                minSteps = 10;
+                maxSteps = 30;
+                break;
+            case 'medium':
+                minSteps = 5;
+                maxSteps = 9;
+                break;
+            case 'hard':
+                minSteps = 1;
+                maxSteps = 4;
+                break;
+            case 'extra_hard':
+                minSteps = 1;
+                maxSteps = 3;
+                break;
+            default: // Should not happen, but good for safety
+                minSteps = 5;
+                maxSteps = 9;
         }
-        // Always send the main keyboard after the signal for consistent UX
-        await ctx.reply('You can use the buttons below:', mainKeyboard);
+
+        const randomSteps = Math.floor(Math.random() * (maxSteps - minSteps + 1)) + minSteps;
+
+        const fullSignalMessage = getPhrase(lang, 'signal_message_format', {
+            steps: randomSteps,
+            level: translatedLevel
+        });
+
+        // --- Use the new function to get the specific image for steps ---
+        const specificImagePath = getSpecificImagePathForSteps(lang, randomSteps);
+
+        if (specificImagePath) {
+            await ctx.replyWithPhoto({ source: specificImagePath }, { caption: fullSignalMessage });
+        } else {
+            // Fallback to sending only text if the specific image is not found
+            await ctx.reply(fullSignalMessage);
+        }
+        await ctx.reply(getPhrase(lang, 'start_has_key'), generateMainKeyboard(lang));
     });
 }
 
@@ -242,32 +436,35 @@ async function handleGiveSignal(ctx) {
  */
 async function handleSubscriptionInfo(ctx) {
     const telegramId = ctx.from.id;
+    const lang = ctx.state.lang;
+
+    // IMPORTANT: Ensure language is set before proceeding
+    if (!lang) {
+        return ctx.reply(getPhrase('it', 'please_choose_language'), setLanguageKeyboard);
+    }
 
     db.get('SELECT u.current_key_id, ak.expires_at FROM users u LEFT JOIN access_keys ak ON u.current_key_id = ak.id WHERE u.telegram_id = ?', [telegramId], async (err, user) => {
         if (err) {
             console.error('Error fetching subscription info:', err);
-            return ctx.reply('An error occurred while fetching your subscription info. Please try again later.');
+            return ctx.reply(getPhrase(lang, 'error_general'));
         }
 
-        // Added expiredKeyKeyboard here
         if (!user || !user.current_key_id) {
-            return ctx.reply('You currently do not have an active subscription. Please activate an access key to get one.', expiredKeyKeyboard);
+            return ctx.reply(getPhrase(lang, 'subscription_no_active'), generateExpiredKeyKeyboard(lang));
         }
 
         if (user.expires_at) {
             const expiryDate = new Date(user.expires_at);
             const now = new Date();
             if (expiryDate < now) {
-                // Key has expired, update DB
                 db.run('UPDATE access_keys SET is_active = FALSE WHERE id = ?', [user.current_key_id]);
                 db.run('UPDATE users SET current_key_id = NULL WHERE telegram_id = ?', [telegramId]);
-                // Added expiredKeyKeyboard here
-                return ctx.reply('Your subscription has expired. Please activate a new access key.', expiredKeyKeyboard);
+                return ctx.reply(getPhrase(lang, 'key_expired'), generateExpiredKeyKeyboard(lang));
             } else {
-                return ctx.reply(`Your subscription is active!\nIt expires on: ${expiryDate.toLocaleString()}`, mainKeyboard);
+                return ctx.reply(getPhrase(lang, 'subscription_active_expires', { expiryDate: expiryDate.toLocaleString(lang) }), generateMainKeyboard(lang));
             }
         } else {
-            return ctx.reply('Your subscription is active!\nIt is set to never expire (lifetime access).', mainKeyboard);
+            return ctx.reply(getPhrase(lang, 'subscription_active_lifetime'), generateMainKeyboard(lang));
         }
     });
 }
@@ -277,113 +474,235 @@ async function handleSubscriptionInfo(ctx) {
 
 // Handles the /start command
 bot.start(async (ctx) => {
-    // Added expiredKeyKeyboard here to the initial message
-    await ctx.reply('Hello! I am your game hints bot. To get access to signals, please enter your unique access key.', expiredKeyKeyboard);
-    // Check if user has an active key to show the main keyboard immediately
-    db.get('SELECT current_key_id FROM users WHERE telegram_id = ?', [ctx.from.id], async (err, user) => {
-        if (!err && user && user.current_key_id) {
-            await ctx.reply('You can now use the following options:', mainKeyboard);
-            await ctx.reply('You can also use the commands: /give_signal and /subscription_info directly from the Telegram menu.');
-        }
-    });
+    const lang = ctx.state.lang;
+
+    if (!lang) {
+        await ctx.reply("Please choose your language to continue:", setLanguageKeyboard);
+    } else {
+        // Перевіряємо, чи є у користувача активний ключ при старті
+        db.get('SELECT u.current_key_id, ak.expires_at FROM users u LEFT JOIN access_keys ak ON u.current_key_id = ak.id WHERE u.telegram_id = ?', [ctx.from.id], async (err, userKeyInfo) => {
+            if (err) {
+                console.error('Error fetching user key info on start:', err);
+                return ctx.reply(getPhrase(lang, 'error_general'));
+            }
+
+            let hasActiveKey = false;
+            if (userKeyInfo && userKeyInfo.current_key_id) {
+                if (userKeyInfo.expires_at && new Date(userKeyInfo.expires_at) < new Date()) {
+                    db.run('UPDATE access_keys SET is_active = FALSE WHERE id = ?', [userKeyInfo.current_key_id]);
+                    db.run('UPDATE users SET current_key_id = NULL WHERE telegram_id = ?', [ctx.from.id], (updateErr) => {
+                        if (updateErr) console.error('Error clearing expired key from user on start:', updateErr);
+                    });
+                } else {
+                    hasActiveKey = true;
+                }
+            }
+
+            if (hasActiveKey) {
+                await ctx.reply(getPhrase(lang, 'start_has_key'), generateMainKeyboard(lang));
+                await ctx.reply(getPhrase(lang, 'commands_info'));
+            } else {
+                await ctx.reply(getPhrase(lang, 'start_welcome'), generateExpiredKeyKeyboard(lang));
+            }
+        });
+    }
 });
 
 // Admin command to generate a key
 // Accessible only by users whose IDs are in ADMIN_IDS
 bot.command('generate_key', async (ctx) => {
+    const lang = ctx.state.lang;
+
+    if (!lang) {
+        return ctx.reply(getPhrase('it', 'please_choose_language'), setLanguageKeyboard);
+    }
+
     if (!ADMIN_IDS.includes(ctx.from.id)) {
-        return ctx.reply('You do not have permission to use this command.');
+        return ctx.reply(getPhrase(lang, 'admin_no_permission'));
     }
 
     const args = ctx.message.text.split(' ').slice(1);
-    const duration = args[0]; // e.g., 'week', 'month', 'forever'
+    const duration = args[0];
 
-    if (!['week', 'month', 'forever'].includes(duration)) {
-        return ctx.reply('Incorrect format. Use: /generate_key [week|month|forever]');
+    if (!['2days', '4days', 'week', 'month', 'forever'].includes(duration)) {
+        return ctx.reply(getPhrase(lang, 'admin_generate_key_format'));
     }
 
     const newKey = generateUniqueKey();
     const expiresAt = calculateExpiryDate(duration);
 
     db.run('INSERT INTO access_keys (key_value, expires_at, created_by_admin_id) VALUES (?, ?, ?)',
-        [newKey, expiresAt, ctx.from.id], function(err) { // Using function keyword for `this.lastID`
+        [newKey, expiresAt, ctx.from.id], function(err) {
             if (err) {
                 console.error('Error generating key:', err);
-                return ctx.reply('Error generating key.');
+                return ctx.reply(getPhrase(lang, 'error_general'));
             }
-            ctx.reply(`New key generated: \`${newKey}\`\nExpires: ${expiresAt ? new Date(expiresAt).toLocaleString() : 'Never'}`,
+            const expiryText = expiresAt ? new Date(expiresAt).toLocaleString(lang) : getPhrase(lang, 'admin_key_generated_never');
+            ctx.reply(getPhrase(lang, 'admin_key_generated', { key: newKey, expiresAt: expiryText }),
                 { parse_mode: 'Markdown' });
         });
 });
+
+// Admin command to generate an EXPIRED key for testing purposes
+bot.command('generate_expired_key', async (ctx) => {
+    const lang = ctx.state.lang;
+
+    if (!lang) {
+        return ctx.reply(getPhrase('it', 'please_choose_language'), setLanguageKeyboard);
+    }
+
+    if (!ADMIN_IDS.includes(ctx.from.id)) {
+        return ctx.reply(getPhrase(lang, 'admin_no_permission'));
+    }
+
+    const newKey = generateUniqueKey();
+    // Use a fixed past date for expiry for testing
+    const expiredAt = '2025-06-10T10:00:00.000Z'; // This date is clearly in the past
+
+    db.run('INSERT INTO access_keys (key_value, expires_at, created_by_admin_id) VALUES (?, ?, ?)',
+        [newKey, expiredAt, ctx.from.id], function(err) {
+            if (err) {
+                console.error('Error generating expired key:', err);
+                return ctx.reply(getPhrase(lang, 'error_general'));
+            }
+            ctx.reply(`Створено закінчений ключ для тестування: \`${newKey}\`\nТермін дії: ${expiredAt}`);
+            ctx.reply('Будь ласка, використовуйте цей ключ для тестування сценарію закінчення терміну дії.');
+        });
+});
+
 
 // --- Command Handlers using the refactored functions ---
 bot.command('give_signal', handleGiveSignal);
 bot.command('subscription_info', handleSubscriptionInfo);
 
+// Handler for the "Change Language" button
+bot.action('change_language', async (ctx) => {
+    const lang = ctx.state.lang;
+    if (!lang) {
+        return ctx.reply(getPhrase('it', 'please_choose_language'), setLanguageKeyboard);
+    }
+    await ctx.editMessageText(getPhrase(lang, 'change_lang_message'), setLanguageKeyboard);
+    await ctx.answerCbQuery();
+});
+
+// Handlers for language selection callbacks
+bot.action(/set_lang_(it|de|fr)/, async (ctx) => {
+    const newLang = ctx.match[1];
+    const telegramId = ctx.from.id;
+
+    db.run('UPDATE users SET language_code = ? WHERE telegram_id = ?', [newLang, telegramId], async (err) => {
+        if (err) {
+            console.error('Error setting language:', err);
+            return ctx.reply(getPhrase(newLang, 'error_general'), generateMainKeyboard(newLang));
+        }
+        ctx.state.lang = newLang; // Оновлюємо мову в стані контексту
+
+        // 1. Повідомляємо про успішну зміну мови
+        await ctx.editMessageText(getPhrase(newLang, 'language_set'));
+        await ctx.answerCbQuery(); // Відповідаємо на callback-запит
+
+        // 2. Тепер перевіряємо, чи є у користувача активний ключ
+        db.get('SELECT u.current_key_id, ak.expires_at FROM users u LEFT JOIN access_keys ak ON u.current_key_id = ak.id WHERE u.telegram_id = ?', [telegramId], async (err, userKeyInfo) => {
+            if (err) {
+                console.error('Error fetching user key info after lang change:', err);
+                return ctx.reply(getPhrase(newLang, 'error_general'), generateMainKeyboard(newLang));
+            }
+
+            let hasActiveKey = false;
+            if (userKeyInfo && userKeyInfo.current_key_id) {
+                // Перевіряємо термін дії ключа
+                if (userKeyInfo.expires_at && new Date(userKeyInfo.expires_at) < new Date()) {
+                    // Ключ прострочений, оновлюємо статус в БД
+                    db.run('UPDATE access_keys SET is_active = FALSE WHERE id = ?', [userKeyInfo.current_key_id]);
+                    db.run('UPDATE users SET current_key_id = NULL WHERE telegram_id = ?', [telegramId], (updateErr) => {
+                        if (updateErr) console.error('Error clearing expired key from user:', updateErr);
+                    });
+                    // Ключ прострочений, тому hasActiveKey залишається false
+                } else {
+                    hasActiveKey = true; // Ключ активний і не прострочений
+                }
+            }
+
+            if (hasActiveKey) {
+                // Якщо є активний ключ, показуємо основне меню
+                await ctx.reply(getPhrase(newLang, 'start_has_key'), generateMainKeyboard(newLang));
+            } else {
+                // Якщо немає активного ключа (або він прострочений), просимо ввести ключ
+                await ctx.reply(getPhrase(newLang, 'start_welcome'), generateExpiredKeyKeyboard(newLang));
+            }
+            // Додатково, якщо є активний ключ, можна надіслати інформацію про команди
+            if (hasActiveKey) {
+                await ctx.reply(getPhrase(newLang, 'commands_info'));
+            }
+        });
+    });
+});
+
+
 // Handles any incoming text message as a potential access key
 bot.on('text', async (ctx) => {
     const userMessage = ctx.message.text.trim();
     const telegramId = ctx.from.id;
+    const lang = ctx.state.lang;
 
-    // Check if user is trying to activate a key
+    if (!lang) {
+        return ctx.reply(getPhrase('it', 'please_choose_language'), setLanguageKeyboard);
+    }
+
     db.get('SELECT u.current_key_id FROM users u WHERE u.telegram_id = ?', [telegramId], async (err, userRow) => {
         if (err) {
             console.error('Error checking user current key:', err);
-            return ctx.reply('An error occurred. Please try again later.');
+            return ctx.reply(getPhrase(lang, 'error_general'));
         }
 
-        // If user already has an active key, don't process new key input directly
         if (userRow && userRow.current_key_id) {
-            // Check if the current key is expired and prompt for a new one
             db.get('SELECT expires_at FROM access_keys WHERE id = ?', [userRow.current_key_id], async (err, keyDetails) => {
                 if (err) {
                     console.error('Error checking key expiry:', err);
-                    return ctx.reply('An error occurred. Please try again later.');
+                    return ctx.reply(getPhrase(lang, 'error_general'));
                 }
                 if (keyDetails && keyDetails.expires_at && new Date(keyDetails.expires_at) < new Date()) {
-                    // Key expired, clean up and allow new key input
                     db.run('UPDATE access_keys SET is_active = FALSE WHERE id = ?', [userRow.current_key_id]);
                     db.run('UPDATE users SET current_key_id = NULL WHERE telegram_id = ?', [telegramId], async (err) => {
                         if (err) console.error('Error nulling expired key:', err);
-                        // Added expiredKeyKeyboard here as well
-                        return ctx.reply('Your access key has expired. Please enter a new key or contact the administrator.', expiredKeyKeyboard);
+                        return ctx.reply(getPhrase(lang, 'key_expired'), generateExpiredKeyKeyboard(lang));
                     });
                 } else {
-                    return ctx.reply('You already have an active access key. You can use the buttons below:', mainKeyboard);
+                    // Якщо ключ дійсний, просто відображаємо головне меню та повідомлення про команди
+                    await ctx.reply(getPhrase(lang, 'start_has_key'), generateMainKeyboard(lang));
+                    await ctx.reply(getPhrase(lang, 'commands_info'));
                 }
             });
         } else {
-            // User does not have an active key, process potential new key
+            // Користувач не має активного ключа, перевіряємо введений текст як ключ
             db.get('SELECT * FROM access_keys WHERE key_value = ? AND is_active = TRUE AND user_id IS NULL', [userMessage], async (err, keyRow) => {
                 if (err) {
                     console.error('Error checking key:', err);
-                    return ctx.reply('An error occurred while checking the key. Please try again later.');
+                    return ctx.reply(getPhrase(lang, 'error_general'));
                 }
 
                 if (keyRow) {
-                    // Check if key has expired
                     if (keyRow.expires_at && new Date(keyRow.expires_at) < new Date()) {
                         db.run('UPDATE access_keys SET is_active = FALSE WHERE id = ?', [keyRow.id]);
-                        // Added expiredKeyKeyboard here
-                        return ctx.reply('This key is no longer valid.', expiredKeyKeyboard);
+                        return ctx.reply(getPhrase(lang, 'key_invalid_not_active'), generateExpiredKeyKeyboard(lang));
                     }
 
-                    // Claim the key
                     db.run('UPDATE access_keys SET user_id = ?, is_active = TRUE WHERE id = ?', [telegramId, keyRow.id], (err) => {
                         if (err) {
                             console.error('Error claiming key:', err);
-                            return ctx.reply('Failed to activate the key. It might already be in use.');
+                            return ctx.reply(getPhrase(lang, 'error_general'));
                         }
                         db.run('UPDATE users SET current_key_id = ? WHERE telegram_id = ?', [keyRow.id, telegramId], async (err) => {
                             if (err) {
                                 console.error('Error linking key to user:', err);
-                                return ctx.reply('An internal error occurred. Please contact the administrator.');
+                                return ctx.reply(getPhrase(lang, 'error_general'));
                             }
-                            await ctx.reply('Key successfully activated! You can now receive signals.', mainKeyboard);
+                            await ctx.reply(getPhrase(lang, 'key_activated'), generateMainKeyboard(lang));
+                            await ctx.reply(getPhrase(lang, 'commands_info')); // Відправляємо інфо про команди після активації
                         });
                     });
                 } else {
-                    await ctx.reply('Invalid key or it has already been used. Please enter a valid unique key.');
+                    await ctx.reply(getPhrase(lang, 'invalid_key_or_used'));
                 }
             });
         }
@@ -394,7 +713,6 @@ bot.on('text', async (ctx) => {
 bot.action('give_signal', handleGiveSignal);
 bot.action('subscription_info', handleSubscriptionInfo);
 
-
 // Start the bot
 bot.launch();
 console.log('Bot started');
@@ -402,14 +720,14 @@ console.log('Bot started');
 // Enable graceful stop on SIGINT (Ctrl+C) and SIGTERM
 process.once('SIGINT', () => {
     bot.stop('SIGINT');
-    db.close((err) => { // Close database connection on exit
+    db.close((err) => {
         if (err) console.error('Error closing database:', err.message);
         console.log('Database connection closed.');
     });
 });
 process.once('SIGTERM', () => {
     bot.stop('SIGTERM');
-    db.close((err) => { // Close database connection on exit
+    db.close((err) => {
         if (err) console.error('Error closing database:', err.message);
         console.log('Database connection closed.');
     });
